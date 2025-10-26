@@ -2,9 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import cross_val_score, KFold
 from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, ExtraTreesRegressor
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_squared_error
+from sklearn.ensemble import ExtraTreesRegressor
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -43,24 +41,20 @@ def preprocess_features(df, is_train=True):
     X = X.fillna(X.median())
     
     if is_train:
-        y = df['revenue']
+        y = np.log1p(df['revenue'])
         return X, y
     else:
         return X
 
 def train_ensemble_model(X_train, y_train):
     models = {
-        'rf': RandomForestRegressor(n_estimators=200, max_depth=15, min_samples_split=5, 
-                                     min_samples_leaf=2, random_state=42, n_jobs=-1),
-        'gbm': GradientBoostingRegressor(n_estimators=200, max_depth=5, learning_rate=0.05,
-                                         min_samples_split=5, random_state=42),
-        'et': ExtraTreesRegressor(n_estimators=200, max_depth=15, min_samples_split=5,
-                                  min_samples_leaf=2, random_state=42, n_jobs=-1),
-        'ridge': Ridge(alpha=100.0, random_state=42)
+        'et': ExtraTreesRegressor(n_estimators=300, max_depth=12, min_samples_split=8,
+                                  min_samples_leaf=4, random_state=42, n_jobs=-1)
     }
     
     print("Training models with cross-validation...")
     trained_models = {}
+    cv_scores_dict = {}
     
     for name, model in models.items():
         print(f"\nTraining {name.upper()}...")
@@ -71,22 +65,45 @@ def train_ensemble_model(X_train, y_train):
                                     scoring='neg_mean_squared_error', n_jobs=-1)
         rmse_scores = np.sqrt(-cv_scores)
         
-        print(f"{name.upper()} - CV RMSE: {rmse_scores.mean():.2f} (+/- {rmse_scores.std():.2f})")
+        print(f"{name.upper()} - CV RMSE: {rmse_scores.mean():.4f} (+/- {rmse_scores.std():.4f})")
         
         trained_models[name] = model
+        cv_scores_dict[name] = rmse_scores.mean()
     
-    return trained_models
+    weights = calculate_optimal_weights(cv_scores_dict)
+    print(f"\nOptimal weights: {weights}")
+    
+    train_preds_log = sum(model.predict(X_train) * weights[name] for name, model in trained_models.items())
+    train_preds = np.expm1(train_preds_log)
+    actual_train = y_train.apply(np.expm1)
+    bias_correction = actual_train.mean() / train_preds.mean()
+    
+    median_correction = actual_train.median() / np.median(train_preds)
+    final_correction = (bias_correction * 0.3 + median_correction * 0.7)
+    
+    print(f"Mean bias correction: {bias_correction:.4f}")
+    print(f"Median bias correction: {median_correction:.4f}")
+    print(f"Final correction factor: {final_correction:.4f}")
+    
+    return trained_models, weights, final_correction
 
-def make_predictions(models, X_test):
+def calculate_optimal_weights(cv_scores_dict):
+    inv_scores = {name: 1.0 / score for name, score in cv_scores_dict.items()}
+    total_inv = sum(inv_scores.values())
+    weights = {name: inv_score / total_inv for name, inv_score in inv_scores.items()}
+    return weights
+
+def make_predictions(models, weights, bias_correction, X_test):
     predictions = {}
     
     for name, model in models.items():
         predictions[name] = model.predict(X_test)
     
-    ensemble_pred = (predictions['rf'] * 0.25 + 
-                    predictions['gbm'] * 0.25 + 
-                    predictions['et'] * 0.25 +
-                    predictions['ridge'] * 0.25)
+    ensemble_pred = sum(predictions[name] * weights[name] for name in models.keys())
+    
+    ensemble_pred = np.expm1(ensemble_pred) * bias_correction
+    
+    ensemble_pred = ensemble_pred * 0.95
     
     return ensemble_pred
 
@@ -104,10 +121,10 @@ def main():
     print(f"Feature shape: {X_train.shape}")
     print(f"Features: {list(X_train.columns)}")
     
-    models = train_ensemble_model(X_train, y_train)
+    models, weights, bias_correction = train_ensemble_model(X_train, y_train)
     
     print("\nMaking predictions on test set...")
-    predictions = make_predictions(models, X_test)
+    predictions = make_predictions(models, weights, bias_correction, X_test)
     
     submission = pd.DataFrame({
         'Id': test_df['Id'],
