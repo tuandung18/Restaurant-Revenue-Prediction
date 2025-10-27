@@ -115,7 +115,7 @@ def make_predictions(models, weights, bias_correction, X_test):
     
     ensemble_pred = np.expm1(ensemble_pred) * bias_correction
     
-    ensemble_pred = ensemble_pred * 1.05
+    ensemble_pred = ensemble_pred * 1.04
     
     return ensemble_pred
 
