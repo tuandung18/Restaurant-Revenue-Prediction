@@ -33,12 +33,24 @@ def preprocess_features(df, is_train=True):
         if col.startswith('P') and col[1:].isdigit():
             feature_cols.append(col)
     
-    X = df[feature_cols]
+    X = df[feature_cols].copy()
     
     for col in X.columns:
         X[col] = pd.to_numeric(X[col], errors='coerce')
     
     X = X.fillna(X.median())
+    
+    X['Age_Years'] = X['Days_Since_Open'] / 365.25
+    X['City_Type_Interaction'] = X['City_Group'] * X['Type']
+    X['Age_City_Interaction'] = X['Age_Years'] * X['City_Group']
+    
+    p_cols = [col for col in X.columns if col.startswith('P')]
+    if len(p_cols) > 0:
+        X['P_Sum'] = X[p_cols].sum(axis=1)
+        X['P_Mean'] = X[p_cols].mean(axis=1)
+        X['P_Std'] = X[p_cols].std(axis=1)
+        X['P_Max'] = X[p_cols].max(axis=1)
+        X['P_Min'] = X[p_cols].min(axis=1)
     
     if is_train:
         y = np.log1p(df['revenue'])
@@ -48,8 +60,8 @@ def preprocess_features(df, is_train=True):
 
 def train_ensemble_model(X_train, y_train):
     models = {
-        'et': ExtraTreesRegressor(n_estimators=300, max_depth=12, min_samples_split=8,
-                                  min_samples_leaf=4, random_state=42, n_jobs=-1)
+        'et': ExtraTreesRegressor(n_estimators=400, max_depth=2, min_samples_split=32,
+                                  min_samples_leaf=4, max_features='sqrt', random_state=42, n_jobs=-1)
     }
     
     print("Training models with cross-validation...")
@@ -103,7 +115,7 @@ def make_predictions(models, weights, bias_correction, X_test):
     
     ensemble_pred = np.expm1(ensemble_pred) * bias_correction
     
-    ensemble_pred = ensemble_pred * 0.95
+    ensemble_pred = ensemble_pred * 1.05
     
     return ensemble_pred
 
